@@ -35,10 +35,14 @@ export class EntityCache<T extends { id: string }> {
       const l1 = this.mem.get(id);
       if (l1) return l1;
       if (this.rds) {
-        const l2 = await this.rds.get<T>(this.entity, id);
-        if (l2) {
-          this.mem.set(id, l2, this.ttl);
-          return l2;
+        try {
+          const l2 = await this.rds.get<T>(this.entity, id);
+          if (l2) {
+            this.mem.set(id, l2, this.ttl);
+            return l2;
+          }
+        } catch (error) {
+          this.onPersistenceError?.(error);
         }
       }
     }
@@ -55,6 +59,8 @@ export class EntityCache<T extends { id: string }> {
   }
 
   set(data: T): void {
+    const current = this.mem.get(data.id);
+    if (current && JSON.stringify(current) === JSON.stringify(data)) return;
     this.mem.set(data.id, data, this.ttl);
     if (this.rds) void this.rds.set(this.entity, data.id, data, this.ttl).catch((error: unknown) => this.onPersistenceError?.(error));
   }

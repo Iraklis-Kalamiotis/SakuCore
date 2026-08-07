@@ -155,6 +155,6 @@ export class MemoryStore<T = unknown> {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
-    this.cache.clear();
+    this.clear();
   }
 }

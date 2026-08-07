@@ -14,6 +14,15 @@ const cached = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 assert.ok(cached.cache);
+cached.cache!.guilds.set({ id: 'guild-1' } as never);
+(cached as unknown as {
+  router: { dispatch(event: string, data: unknown): void };
+}).router.dispatch('GUILD_DELETE', { id: 'guild-1', unavailable: true });
+assert.ok(cached.cache!.guilds.get('guild-1'));
+(cached as unknown as {
+  router: { dispatch(event: string, data: unknown): void };
+}).router.dispatch('GUILD_DELETE', { id: 'guild-1' });
+assert.equal(cached.cache!.guilds.get('guild-1'), undefined);
 await cached.destroy();
 
 const sharded = new Client({
@@ -43,10 +52,32 @@ sharded.once('ready', () => { ready = true; });
 assert.equal(ready, true);
 assert.equal(sharded.user?.id, '1');
 
-await sharded.login();
-await sharded.destroy();
+await Promise.all([sharded.login(), sharded.login()]);
+await Promise.all([sharded.destroy(), sharded.destroy()]);
 assert.equal(spawned, 1);
 assert.equal(destroyed, 1);
+
+const errors: unknown[] = [];
+const routed = new Client({
+  token: 'test-token',
+  intents: [GatewayIntentBits.Guilds],
+  cache: false,
+  onError: (error) => errors.push(error),
+});
+let onceCalls = 0;
+routed.once('ready', async () => {
+  onceCalls++;
+  throw new Error('async listener failure');
+});
+(routed as unknown as {
+  router: { dispatch(event: string, data: unknown): void };
+}).router.dispatch('READY', {
+  user: { id: '2', username: 'Saku', discriminator: '0001', avatar: null },
+});
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(onceCalls, 1);
+assert.equal(errors.length, 1);
+await routed.destroy();
 
 assert.throws(
   () => new Client({ token: '', intents: [GatewayIntentBits.Guilds] }),

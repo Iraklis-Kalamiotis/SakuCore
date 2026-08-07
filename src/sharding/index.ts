@@ -364,10 +364,15 @@ export class ShardingManager {
 
     this.debug(`Spawning ${this.totalShards} shards`);
 
-    for (let i = 0; i < this.totalShards; i++) {
-      await this.spawnShard(i);
-      if (i < this.totalShards - 1) {
-        this.debug(`Waiting ${this.spawnDelay}ms before next shard`);
+    for (let start = 0; start < this.totalShards; start += this.maxConcurrency) {
+      const shardIds = Array.from(
+        { length: Math.min(this.maxConcurrency, this.totalShards - start) },
+        (_, offset) => start + offset,
+      );
+      await Promise.all(shardIds.map((shardId) => this.spawnShard(shardId)));
+
+      if (start + this.maxConcurrency < this.totalShards) {
+        this.debug(`Waiting ${this.spawnDelay}ms before the next identify bucket batch`);
         await new Promise((resolve) => setTimeout(resolve, this.spawnDelay));
       }
     }

@@ -1,4 +1,4 @@
-import { REST as DiscordREST, RESTEvents, type RESTOptions as DiscordRESTOptions } from '@discordjs/rest';
+import { REST as DiscordREST, RESTEvents, RequestMethod, type RequestData, type RESTOptions as DiscordRESTOptions, type RouteLike } from '@discordjs/rest';
 import { Routes } from 'discord-api-types/v10';
 import type {
   APIUser,
@@ -42,6 +42,17 @@ export class REST {
     }
   }
 
+  /** Sends a typed request through Discord.js' rate-limit aware REST client. */
+  async request<T>(method: RequestMethod, route: RouteLike, options?: RequestData): Promise<T> {
+    switch (method) {
+      case RequestMethod.Get: return this.client.get(route, options) as Promise<T>;
+      case RequestMethod.Post: return this.client.post(route, options) as Promise<T>;
+      case RequestMethod.Put: return this.client.put(route, options) as Promise<T>;
+      case RequestMethod.Patch: return this.client.patch(route, options) as Promise<T>;
+      case RequestMethod.Delete: return this.client.delete(route, options) as Promise<T>;
+    }
+  }
+
   async getChannel(channelId: string): Promise<APIChannel> {
     return this.client.get(Routes.channel(channelId)) as Promise<APIChannel>;
   }
@@ -54,6 +65,10 @@ export class REST {
       }
     }
     return this.client.get(Routes.channelMessages(channelId), { query: params }) as Promise<APIMessage[]>;
+  }
+
+  async getMessage(channelId: string, messageId: string): Promise<APIMessage> {
+    return this.client.get(Routes.channelMessage(channelId, messageId)) as Promise<APIMessage>;
   }
 
   async sendMessage(channelId: string, body: RESTPostAPIChannelMessageJSONBody): Promise<APIMessage> {
@@ -84,6 +99,14 @@ export class REST {
       }
     }
     return this.client.get(Routes.guildMembers(guildId), { query: params }) as Promise<APIGuildMember[]>;
+  }
+
+  async getGuildMember(guildId: string, userId: string): Promise<APIGuildMember> {
+    return this.client.get(Routes.guildMember(guildId, userId)) as Promise<APIGuildMember>;
+  }
+
+  async getGuildRoles(guildId: string): Promise<APIRole[]> {
+    return this.client.get(Routes.guildRoles(guildId)) as Promise<APIRole[]>;
   }
 
   async getUser(userId: string): Promise<APIUser> {

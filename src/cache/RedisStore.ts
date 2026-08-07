@@ -126,17 +126,9 @@ export class RedisStore {
 
   async flush(entity?: string): Promise<void> {
     if (entity) {
-      const pattern = this.formatKey(entity, '*');
-      const keys = await this.scan(pattern);
-      if (keys.length > 0) {
-        await this.redis.del(...keys);
-      }
+      await this.deleteMatching(this.formatKey(entity, '*'));
     } else {
-      const pattern = this.prefix + '*';
-      const keys = await this.scan(pattern);
-      if (keys.length > 0) {
-        await this.redis.del(...keys);
-      }
+      await this.deleteMatching(this.prefix + '*');
     }
   }
 
@@ -147,10 +139,7 @@ export class RedisStore {
   }
 
   async deleteByPrefix(entity: string, idPrefix: string): Promise<void> {
-    const keys = await this.scan(this.formatKey(entity, `${idPrefix}*`));
-    if (keys.length > 0) {
-      await this.redis.del(...keys);
-    }
+    await this.deleteMatching(this.formatKey(entity, `${idPrefix}*`));
   }
 
   private async scan(pattern: string): Promise<string[]> {
@@ -162,5 +151,14 @@ export class RedisStore {
       keys.push(...batch);
     } while (cursor !== '0');
     return keys;
+  }
+
+  private async deleteMatching(pattern: string): Promise<void> {
+    let cursor = '0';
+    do {
+      const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+      cursor = nextCursor;
+      if (keys.length > 0) await this.redis.del(...keys);
+    } while (cursor !== '0');
   }
 }

@@ -16,7 +16,12 @@ const client = new Client({
   debug: true,
   cache: {
     redis: process.env.REDIS_URL ? { host: 'localhost', port: 6379 } : null,
-    limits: { messages: 5, members: 200 },
+    limits: {
+      messagesPerChannel: 5,
+      messagesGlobal: 5,
+      membersPerGuild: 200,
+      membersGlobal: 200,
+    },
     ttl: {
       guilds: null,
       channels: null,

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { CacheManager } from '../src/cache/index.js';
+import { EntityCache } from '../src/cache/EntityCache.js';
 import { MemoryStore } from '../src/cache/MemoryStore.js';
 import type { APIChannel, APIGuild, APIGuildMember, APIMessage, APIRole, APIUser } from '../src/types/index.js';
 
@@ -19,13 +20,28 @@ async function run(): Promise<void> {
   assert.deepEqual(lru.keys(), ['a', 'c']);
   assert.equal(lru.get('b'), undefined);
 
+  let fetches = 0;
+  const refreshable = new EntityCache<{ id: string; value: number }>(null, {
+    entity: 'refreshable',
+    fetcher: async (id) => ({ id, value: ++fetches }),
+  });
+  assert.equal((await refreshable.fetch('fresh'))?.value, 1);
+  assert.equal((await refreshable.fetch('fresh'))?.value, 1);
+  assert.equal((await refreshable.fetch('fresh', true))?.value, 2);
+
   const expiring = new MemoryStore<string>({ defaultTTL: 0.02 });
   expiring.set('short-lived', 'value');
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(expiring.get('short-lived'), undefined);
 
   const cache = new CacheManager({
-    limits: { messages: 2, members: 2, interactions: 2 },
+    limits: {
+      messagesPerChannel: 2,
+      messagesGlobal: 2,
+      membersPerGuild: 2,
+      membersGlobal: 2,
+      interactions: 2,
+    },
     ttl: { users: 0.02, interactions: null },
   });
   const originalUser = cache.cacheUser(user('u1', 'before'));

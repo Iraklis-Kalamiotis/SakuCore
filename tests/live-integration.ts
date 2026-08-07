@@ -30,7 +30,15 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
   ],
-  cache: { limits: { messages: 10, members: 100, interactions: 10 } },
+  cache: {
+    limits: {
+      messagesPerChannel: 10,
+      messagesGlobal: 10,
+      membersPerGuild: 100,
+      membersGlobal: 100,
+      interactions: 10,
+    },
+  },
 });
 
 let messageId: string | undefined;
