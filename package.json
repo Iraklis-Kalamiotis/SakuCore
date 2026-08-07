@@ -1,0 +1,60 @@
+{
+  "name": "sakucore",
+  "version": "0.1.0",
+  "description": "Type-safe Discord API client built on Discord.js transport primitives",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "test:cache": "tsx tests/cache.ts",
+    "test:client": "tsx tests/client.ts",
+    "test:sharding": "tsx tests/sharding.ts",
+    "test:live": "tsx tests/live-integration.ts",
+    "test": "npm run test:cache && npm run test:client && npm run test:sharding",
+    "prepack": "npm run build",
+    "dev": "tsx src/index.ts",
+    "bot": "tsx example/bot.ts",
+    "bot:sharded": "tsx example/sharded-bot.ts",
+    "bot:cached": "tsx example/cached-bot.ts"
+  },
+  "keywords": [
+    "discord",
+    "framework",
+    "typescript",
+    "ws",
+    "rest"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "author": "",
+  "dependencies": {
+    "@discordjs/rest": "^2.6.3",
+    "@discordjs/ws": "^2.0.4",
+    "discord-api-types": "^0.38.53",
+    "dotenv": "^17.4.2",
+    "ioredis": "^6.0.0",
+    "ws": "^8.21.2"
+  },
+  "devDependencies": {
+    "@types/dotenv": "^6.1.1",
+    "@types/ioredis": "^4.28.10",
+    "@types/node": "^26.1.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.10",
+    "typescript": "^7.0.2"
+  }
+}
