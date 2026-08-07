@@ -167,16 +167,24 @@ export class Client {
 
   private async start(): Promise<void> {
     await this.cache?.connect();
-    await this.plugins.load();
-    if (this.sharding) await this.sharding.spawnAll();
-    else await this.gateway!.connect();
-    await this.plugins.enable();
+    try {
+      await this.plugins.enable();
+      if (this.sharding) await this.sharding.spawnAll();
+      else await this.gateway!.connect();
+    } catch (error) {
+      try {
+        await this.plugins.unload();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'SakuCore startup failed');
+      }
+      throw error;
+    }
   }
 
   private async stop(): Promise<void> {
     if (this.loginPromise) await this.loginPromise.catch(() => {});
     const results = await Promise.allSettled([
-      this.plugins.disable(),
+      this.plugins.unload(),
       this.sharding ? this.sharding.destroyAll() : this.gateway!.destroy(),
       this.cache?.destroy() ?? Promise.resolve(),
     ]);

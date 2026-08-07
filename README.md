@@ -66,9 +66,9 @@ const guild = await client.rest.request(RequestMethod.Get, '/guilds/123');
 Plugins are infrastructure extensions, not core application features:
 
 ```ts
-import { plugin } from 'sakucore';
+import { definePlugin } from 'sakucore';
 
-const telemetry = plugin({
+const telemetry = definePlugin({
   metadata: { name: 'telemetry', version: '1.0.0' },
   onEnable: ({ events }) => events.on('ready', () => console.log('ready')),
 });
@@ -77,8 +77,10 @@ const client = new Client({ token, intents, plugins: [telemetry] });
 ```
 
 Plugins support dependency ordering and `onLoad`, `onEnable`, and `onDisable`
-lifecycle hooks. Commands, moderation, databases, and similar features remain
-application/plugin concerns.
+lifecycle hooks, plus `setup`, `onUnload`, an abort signal, and automatic
+listener/disposer cleanup. Commands, moderation, databases, and similar
+features remain application/plugin concerns. See [MIGRATION.md](MIGRATION.md)
+for v2 compatibility changes.
 
 ## Sharding
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { CacheManager } from '../src/cache/index.js';
 import { EntityCache } from '../src/cache/EntityCache.js';
+import { PersistenceQueue } from '../src/cache/PersistenceQueue.js';
 import { MemoryStore } from '../src/cache/MemoryStore.js';
 import type { APIChannel, APIGuild, APIGuildMember, APIMessage, APIRole, APIUser } from '../src/types/index.js';
 
@@ -29,6 +30,16 @@ async function run(): Promise<void> {
   assert.equal((await refreshable.fetch('fresh'))?.value, 1);
   assert.equal((await refreshable.fetch('fresh', true))?.value, 2);
 
+  const queue = new PersistenceQueue();
+  const writes: string[] = [];
+  const first = queue.enqueue('entity:1', async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    writes.push('first');
+  });
+  const second = queue.enqueue('entity:1', async () => writes.push('second'));
+  await Promise.all([first, second]);
+  assert.deepEqual(writes, ['first', 'second']);
+
   const expiring = new MemoryStore<string>({ defaultTTL: 0.02 });
   expiring.set('short-lived', 'value');
   await new Promise((resolve) => setTimeout(resolve, 30));
@@ -55,6 +66,15 @@ async function run(): Promise<void> {
   assert.equal(cache.members.get('g1', 'u1'), undefined);
   assert.equal(cache.members.get('g1', 'u2')?.user.id, 'u2');
   assert.equal(cache.getStats().members, 2);
+
+  const globallyBounded = new CacheManager({
+    limits: { membersPerGuild: 10, membersGlobal: 1 },
+  });
+  globallyBounded.cacheMember('g-a', member('a'));
+  globallyBounded.cacheMember('g-b', member('b'));
+  assert.equal(globallyBounded.members.scopeCount, 1);
+  assert.equal(globallyBounded.members.get('g-a', 'a'), undefined);
+  await globallyBounded.destroy();
 
   cache.cacheMessage(message('m1', 'c1', canonicalUser));
   cache.cacheMessage(message('m2', 'c1', canonicalUser));

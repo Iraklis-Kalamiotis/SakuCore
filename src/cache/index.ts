@@ -1,6 +1,7 @@
 import { EntityCache } from './EntityCache.js';
 import { MemoryStore } from './MemoryStore.js';
 import { RedisStore } from './RedisStore.js';
+import { PersistenceQueue } from './PersistenceQueue.js';
 import { UserDeduplicationManager } from './UserDeduplicationManager.js';
 import type { RedisStoreOptions } from './RedisStore.js';
 import type { REST } from '../rest/index.js';
@@ -35,7 +36,7 @@ export interface CacheSweepOptions {
 }
 
 export interface CacheManagerOptions {
-  redis?: RedisStoreOptions | null;
+  redis?: (RedisStoreOptions & { required?: boolean }) | null;
   prefix?: string;
   limits?: Partial<CacheLimits>;
   ttl?: Partial<CacheTTL>;
@@ -68,10 +69,6 @@ export interface CacheStats {
 type GuildSnapshot = APIGuild & { channels?: APIChannel[]; members?: APIGuildMember[] };
 type ScopedFetcher<T> = (scopeId: string, id: string) => Promise<T | null>;
 
-function isEqual(left: unknown, right: unknown): boolean {
-  return left === right || JSON.stringify(left) === JSON.stringify(right);
-}
-
 class ScopedEntityCache<T> {
   private readonly stores = new Map<string, MemoryStore<T>>();
   private readonly access = new Map<string, { scopeId: string; id: string }>();
@@ -84,6 +81,7 @@ class ScopedEntityCache<T> {
     private readonly ttl: number | null,
     private readonly fetcher: ScopedFetcher<T> | undefined,
     private readonly onPersistenceError: (error: unknown) => void,
+    private readonly persistence: PersistenceQueue,
   ) {}
 
   private accessKey(scopeId: string, id: string): string {
@@ -99,10 +97,14 @@ class ScopedEntityCache<T> {
   private store(scopeId: string, create = true): MemoryStore<T> | undefined {
     const existing = this.stores.get(scopeId);
     if (existing || !create) return existing;
-    const store = new MemoryStore<T>({
+    let store!: MemoryStore<T>;
+    store = new MemoryStore<T>({
       maxSize: this.perScopeLimit,
       defaultTTL: this.ttl,
-      onEvict: (id) => this.access.delete(this.accessKey(scopeId, id)),
+      onEvict: (id) => {
+        this.access.delete(this.accessKey(scopeId, id));
+        if (store.size === 0) this.stores.delete(scopeId);
+      },
     });
     this.stores.set(scopeId, store);
     return store;
@@ -146,17 +148,14 @@ class ScopedEntityCache<T> {
   }
 
   set(scopeId: string, id: string, data: T): void {
-    const current = this.get(scopeId, id);
-    if (current && isEqual(current, data)) return;
+    if (this.get(scopeId, id) === data) return;
     this.setMemory(scopeId, id, data);
-    if (this.rds) {
-      void this.rds.set(this.entity, `${scopeId}:${id}`, data, this.ttl).catch(this.onPersistenceError);
-    }
+    this.persist(scopeId, id, () => this.rds!.set(this.entity, `${scopeId}:${id}`, data, this.ttl));
   }
 
   delete(scopeId: string, id: string): void {
     this.store(scopeId, false)?.delete(id);
-    if (this.rds) void this.rds.delete(this.entity, `${scopeId}:${id}`).catch(this.onPersistenceError);
+    this.persist(scopeId, id, () => this.rds!.delete(this.entity, `${scopeId}:${id}`));
   }
 
   get(scopeId: string, id: string): T | undefined {
@@ -202,6 +201,11 @@ class ScopedEntityCache<T> {
     this.stores.clear();
     this.access.clear();
   }
+
+  private persist(scopeId: string, id: string, operation: () => Promise<void>): void {
+    if (!this.rds) return;
+    void this.persistence.enqueue(`${this.entity}:${scopeId}:${id}`, operation).catch(this.onPersistenceError);
+  }
 }
 
 type CachedMessage = APIMessage & { guild_id?: string; member?: APIGuildMember };
@@ -235,10 +239,13 @@ export class CacheManager {
   private readonly guildChannels = new Map<string, Set<string>>();
   private readonly sweepTimers: ReturnType<typeof setInterval>[] = [];
   private readonly reportError: (error: unknown) => void;
+  private readonly persistence = new PersistenceQueue();
+  private readonly redisRequired: boolean;
 
   constructor(options: CacheManagerOptions = {}, rest: REST | null = null) {
     const redisOptions = options.redis ? { ...options.redis, prefix: options.prefix ?? options.redis.prefix } : null;
     this.rds = redisOptions ? new RedisStore(redisOptions) : null;
+    this.redisRequired = options.redis?.required ?? false;
     this.reportError = options.onError ?? ((error) => console.error('[SakuCore cache]', error));
     const ttl: CacheTTL = {
       guilds: options.ttl?.guilds ?? null, channels: options.ttl?.channels ?? null,
@@ -256,13 +263,14 @@ export class CacheManager {
       rolesPerGuild: options.limits?.rolesPerGuild ?? 1_000,
       rolesGlobal: options.limits?.rolesGlobal ?? 10_000,
     };
-    this.guilds = new EntityCache(this.rds, { entity: 'guild', limit: limits.guilds, ttl: ttl.guilds, fetcher: rest ? (id) => rest.getGuild(id) : undefined, onPersistenceError: this.reportError });
-    this.channels = new EntityCache(this.rds, { entity: 'channel', limit: limits.channels, ttl: ttl.channels, fetcher: rest ? (id) => rest.getChannel(id) : undefined, onPersistenceError: this.reportError });
-    this.users = new EntityCache(this.rds, { entity: 'user', limit: limits.users, ttl: ttl.users, fetcher: rest ? (id) => rest.getUser(id) : undefined, onPersistenceError: this.reportError, onEvict: (id) => this.userDeduplicator.delete(id) });
-    this.members = new ScopedEntityCache(this.rds, 'member', limits.membersPerGuild, limits.membersGlobal, ttl.members, rest ? ((guildId, userId) => rest.getGuildMember(guildId, userId)) : undefined, this.reportError);
-    this.roles = new ScopedEntityCache(this.rds, 'role', limits.rolesPerGuild, limits.rolesGlobal, ttl.roles, rest ? (async (guildId, roleId) => (await rest.getGuildRoles(guildId)).find((role) => role.id === roleId) ?? null) : undefined, this.reportError);
-    this.messages = new MessageCache(this.rds, 'message', limits.messagesPerChannel, limits.messagesGlobal, ttl.messages, rest ? (channelId, messageId) => rest.getMessage(channelId, messageId) as Promise<CachedMessage> : undefined, this.reportError);
-    this.interactions = new EntityCache(this.rds, { entity: 'interaction', limit: limits.interactions, ttl: ttl.interactions, onPersistenceError: this.reportError });
+    const persistent = { persistence: this.persistence, onPersistenceError: this.reportError };
+    this.guilds = new EntityCache(this.rds, { entity: 'guild', limit: limits.guilds, ttl: ttl.guilds, fetcher: rest ? (id) => rest.getGuild(id) : undefined, ...persistent });
+    this.channels = new EntityCache(this.rds, { entity: 'channel', limit: limits.channels, ttl: ttl.channels, fetcher: rest ? (id) => rest.getChannel(id) : undefined, ...persistent, onEvict: (_id, channel) => this.removeChannelIndex(channel) });
+    this.users = new EntityCache(this.rds, { entity: 'user', limit: limits.users, ttl: ttl.users, fetcher: rest ? (id) => rest.getUser(id) : undefined, ...persistent, onEvict: (id) => this.userDeduplicator.delete(id) });
+    this.members = new ScopedEntityCache(this.rds, 'member', limits.membersPerGuild, limits.membersGlobal, ttl.members, rest ? ((guildId, userId) => rest.getGuildMember(guildId, userId)) : undefined, this.reportError, this.persistence);
+    this.roles = new ScopedEntityCache(this.rds, 'role', limits.rolesPerGuild, limits.rolesGlobal, ttl.roles, rest ? (async (guildId, roleId) => (await rest.getGuildRoles(guildId)).find((role) => role.id === roleId) ?? null) : undefined, this.reportError, this.persistence);
+    this.messages = new MessageCache(this.rds, 'message', limits.messagesPerChannel, limits.messagesGlobal, ttl.messages, rest ? (channelId, messageId) => rest.getMessage(channelId, messageId) as Promise<CachedMessage> : undefined, this.reportError, this.persistence);
+    this.interactions = new EntityCache(this.rds, { entity: 'interaction', limit: limits.interactions, ttl: ttl.interactions, ...persistent });
     this.scheduleSweep('guilds', this.guilds, ttl.guilds, options.sweeper?.guilds);
     this.scheduleSweep('channels', this.channels, ttl.channels, options.sweeper?.channels);
     this.scheduleSweep('users', this.users, ttl.users, options.sweeper?.users);
@@ -350,6 +358,7 @@ export class CacheManager {
       await this.rds.connect();
     } catch (error) {
       this.reportError(error);
+      if (this.redisRequired) throw error;
     }
   }
 
@@ -373,6 +382,13 @@ export class CacheManager {
     const timer = setInterval(() => cache.sweep(configured?.lifetime), interval * 1000);
     timer.unref();
     this.sweepTimers.push(timer);
+  }
+
+  private removeChannelIndex(channel: APIChannel): void {
+    if (!('guild_id' in channel) || !channel.guild_id) return;
+    const ids = this.guildChannels.get(channel.guild_id);
+    ids?.delete(channel.id);
+    if (ids?.size === 0) this.guildChannels.delete(channel.guild_id);
   }
 }
 

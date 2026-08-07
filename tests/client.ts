@@ -38,24 +38,32 @@ assert.equal(sharded.ping, -1);
 let spawned = 0;
 let destroyed = 0;
 const manager = sharded.sharding!;
-manager.spawnAll = async () => { spawned++; };
+manager.spawnAll = async () => {
+  spawned++;
+  (manager as unknown as {
+    emit(event: 'dispatch', payload: { t: string; d: unknown }, shardId: number): void;
+  }).emit('dispatch', {
+    t: 'READY',
+    d: { user: { id: '1', username: 'Saku', discriminator: '0001', avatar: null } },
+  }, 0);
+};
 manager.destroyAll = async () => { destroyed++; };
 
 let ready = false;
+let pluginReady = false;
 sharded.once('ready', () => { ready = true; });
-(manager as unknown as {
-  emit(event: 'dispatch', payload: { t: string; d: unknown }, shardId: number): void;
-}).emit('dispatch', {
-  t: 'READY',
-  d: { user: { id: '1', username: 'Saku', discriminator: '0001', avatar: null } },
-}, 0);
-assert.equal(ready, true);
-assert.equal(sharded.user?.id, '1');
+sharded.use({
+  metadata: { name: 'ready-observer' },
+  onEnable: (ctx) => { ctx.events.on('ready', () => { pluginReady = true; }); },
+});
 
 await Promise.all([sharded.login(), sharded.login()]);
 await Promise.all([sharded.destroy(), sharded.destroy()]);
 assert.equal(spawned, 1);
 assert.equal(destroyed, 1);
+assert.equal(ready, true);
+assert.equal(pluginReady, true);
+assert.equal(sharded.user?.id, '1');
 
 const errors: unknown[] = [];
 const routed = new Client({

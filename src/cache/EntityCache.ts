@@ -1,5 +1,6 @@
 import { MemoryStore } from './MemoryStore.js';
 import { RedisStore } from './RedisStore.js';
+import { PersistenceQueue } from './PersistenceQueue.js';
 export interface EntityCacheOptions<T> {
   entity: string;
   limit?: number;
@@ -7,6 +8,7 @@ export interface EntityCacheOptions<T> {
   fetcher?: (id: string) => Promise<T>;
   onPersistenceError?: (error: unknown) => void;
   onEvict?: (id: string, value: T) => void;
+  persistence?: PersistenceQueue;
 }
 
 export class EntityCache<T extends { id: string }> {
@@ -16,6 +18,7 @@ export class EntityCache<T extends { id: string }> {
   private readonly entity: string;
   private readonly fetcher?: (id: string) => Promise<T>;
   private readonly onPersistenceError?: (error: unknown) => void;
+  private readonly persistence?: PersistenceQueue;
 
   constructor(rds: RedisStore | null, options: EntityCacheOptions<T>) {
     this.rds = rds;
@@ -23,6 +26,7 @@ export class EntityCache<T extends { id: string }> {
     this.ttl = options.ttl ?? null;
     this.fetcher = options.fetcher;
     this.onPersistenceError = options.onPersistenceError;
+    this.persistence = options.persistence;
     this.mem = new MemoryStore<T>({
       maxSize: options.limit ?? Infinity,
       defaultTTL: this.ttl,
@@ -50,7 +54,7 @@ export class EntityCache<T extends { id: string }> {
     try {
       const l3 = await this.fetcher(id);
       this.mem.set(id, l3, this.ttl);
-      if (this.rds) await this.rds.set(this.entity, id, l3, this.ttl);
+      this.persist(id, () => this.rds!.set(this.entity, id, l3, this.ttl));
       return l3;
     } catch (error) {
       this.onPersistenceError?.(error);
@@ -59,15 +63,14 @@ export class EntityCache<T extends { id: string }> {
   }
 
   set(data: T): void {
-    const current = this.mem.get(data.id);
-    if (current && JSON.stringify(current) === JSON.stringify(data)) return;
+    if (this.mem.get(data.id) === data) return;
     this.mem.set(data.id, data, this.ttl);
-    if (this.rds) void this.rds.set(this.entity, data.id, data, this.ttl).catch((error: unknown) => this.onPersistenceError?.(error));
+    this.persist(data.id, () => this.rds!.set(this.entity, data.id, data, this.ttl));
   }
 
   delete(id: string): void {
     this.mem.delete(id);
-    if (this.rds) void this.rds.delete(this.entity, id).catch((error: unknown) => this.onPersistenceError?.(error));
+    this.persist(id, () => this.rds!.delete(this.entity, id));
   }
 
   get(id: string): T | undefined { return this.mem.get(id); }
@@ -76,4 +79,12 @@ export class EntityCache<T extends { id: string }> {
   clear(): void { this.mem.clear(); }
   sweep(maxAgeSeconds?: number): void { this.mem.sweep(maxAgeSeconds); }
   destroy(): void { this.mem.destroy(); }
+
+  private persist(id: string, operation: () => Promise<void>): void {
+    if (!this.rds) return;
+    const task = this.persistence
+      ? this.persistence.enqueue(`${this.entity}:${id}`, operation)
+      : operation();
+    void task.catch((error: unknown) => this.onPersistenceError?.(error));
+  }
 }

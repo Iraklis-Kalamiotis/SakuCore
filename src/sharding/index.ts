@@ -361,20 +361,45 @@ export class ShardingManager {
     } else {
       this.totalShards = await this.calculateShardCount();
     }
+    if (!this.gatewayInfo) await this.fetchGatewayInfo();
+    const gatewayInfo = this.gatewayInfo;
+    if (!gatewayInfo) throw new Error('Gateway information was not available after fetching it');
+    if (gatewayInfo.session_start_limit.remaining < this.totalShards) {
+      const { remaining, reset_after: resetAfter } = gatewayInfo.session_start_limit;
+      const required = this.totalShards;
+      this.totalShards = 0;
+      throw new Error(
+        `Discord identify budget is insufficient: ${remaining} remaining for ${required} shards; resets in ${resetAfter}ms`,
+      );
+    }
 
     this.debug(`Spawning ${this.totalShards} shards`);
 
-    for (let start = 0; start < this.totalShards; start += this.maxConcurrency) {
-      const shardIds = Array.from(
-        { length: Math.min(this.maxConcurrency, this.totalShards - start) },
-        (_, offset) => start + offset,
-      );
-      await Promise.all(shardIds.map((shardId) => this.spawnShard(shardId)));
+    try {
+      for (let start = 0; start < this.totalShards; start += this.maxConcurrency) {
+        const shardIds = Array.from(
+          { length: Math.min(this.maxConcurrency, this.totalShards - start) },
+          (_, offset) => start + offset,
+        );
+        const results = await Promise.allSettled(shardIds.map((shardId) => this.spawnShard(shardId)));
+        const errors = results
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map((result) => result.reason);
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, 'Multiple shards failed to start');
 
-      if (start + this.maxConcurrency < this.totalShards) {
-        this.debug(`Waiting ${this.spawnDelay}ms before the next identify bucket batch`);
-        await new Promise((resolve) => setTimeout(resolve, this.spawnDelay));
+        if (start + this.maxConcurrency < this.totalShards) {
+          this.debug(`Waiting ${this.spawnDelay}ms before the next identify bucket batch`);
+          await new Promise((resolve) => setTimeout(resolve, this.spawnDelay));
+        }
       }
+    } catch (error) {
+      try {
+        await this.destroyAll();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Shard startup failed and cleanup was incomplete');
+      }
+      throw error;
     }
   }
 
